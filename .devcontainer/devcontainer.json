@@ -1,33 +1,64 @@
-{
-  "name": "Python 3",
-  // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
-  "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bullseye",
-  "customizations": {
-    "codespaces": {
-      "openFiles": [
-        "README.md",
-        "streamlit_app.py"
-      ]
-    },
-    "vscode": {
-      "settings": {},
-      "extensions": [
-        "ms-python.python",
-        "ms-python.vscode-pylance"
-      ]
-    }
-  },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
-  "postAttachCommand": {
-    "server": "streamlit run streamlit_app.py --server.enableCORS false --server.enableXsrfProtection false"
-  },
-  "portsAttributes": {
-    "8501": {
-      "label": "Application",
-      "onAutoForward": "openPreview"
-    }
-  },
-  "forwardPorts": [
-    8501
-  ]
-}
+import streamlit as st
+import requests
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from datetime import datetime
+
+st.set_page_config(page_title="Heatseeker Lite", layout="wide")
+st.title("Heatseeker Lite — 100% Free Forever")
+
+st.sidebar.header("Configuration")
+API_KEY = st.sidebar.text_input("Polygon.io API Key", type="password", help="Free at polygon.io")
+ticker = st.sidebar.selectbox("Ticker", ["SPY","QQQ","IWM","AAPL","TSLA","NVDA","AMD","META","GOOGL","MSFT"])
+spot = st.sidebar.number_input("Current price", value=585.0, step=0.1)
+
+if not API_KEY:
+    st.warning("Paste your free Polygon key above")
+    st.stop()
+
+@st.cache_data(ttl=600)
+def get_chain(ticker):
+    url = f"https://api.polygon.io/v3/reference/options/contracts?underlying_ticker={ticker}&contract_type=option&limit=1000&apiKey={API_KEY}"
+    data = requests.get(url).json().get("results", [])
+    return pd.DataFrame(data)
+
+df = get_chain(ticker)
+if df.empty or len(df) < 10:
+    st.error("Invalid key or no data — grab your free key at polygon.io")
+    st.stop()
+
+# Fix column names (Polygon sometimes uses different ones)
+df["strike"] = df["strike_price"]
+df["expiration"] = pd.to_datetime(df["expiration_date"])
+df["days"] = (df["expiration"] - pd.to_datetime("today")).dt.days
+df = df[df["days"] > 0]
+
+# Open interest column can be "open_interest" or "volume" — we take whatever exists
+oi_col = "open_interest" if "open_interest" in df.columns else "volume"
+df["oi"] = pd.to_numeric(df[oi_col], errors="coerce").fillna(1000)
+
+# Simple but very effective GEX
+df["gamma"] = 0.4 / (df["strike"] * 0.2 * np.sqrt(df["days"]/365 + 0.002))
+df["gex"] = -df["oi"] * df["gamma"] * spot * spot * 0.01
+
+gex = df.groupby("strike")["gex"].sum().reset_index()
+
+# King Node
+king = gex.loc[gex["gex"].idxmax(), "strike"]
+
+# Plot
+fig = go.Figure()
+fig.add_trace(go.Bar(x=gex["strike"], y=gex["gex"]/1e6,
+                     marker_color=["limegreen" if x>0 else "crimson" for x in gex["gex"]]))
+fig.add_vline(x=spot, line_color="white", line_dash="dot", annotation_text="Spot")
+fig.add_vline(x=king, line_color="gold", line_width=6, annotation_text="KING NODE")
+fig.update_layout(title=f"{ticker} • King Node ${king:.1f}", height=600, template="plotly_dark")
+st.plotly_chart(fig, use_container_width=True)
+
+col1, col2 = st.columns(2)
+col1.metric("KING NODE", f"${king:.2f}")
+col2.metric("Distance", f"{spot-king:+.2f}")
+
+st.success(f"Dealers are defending/pinning {ticker} to ${king:.2f}")
+st.dataframe(gex.assign(GEX_M=(gex.gex/1e6).round(2)).sort_values("gex", ascending=False).head(25])
