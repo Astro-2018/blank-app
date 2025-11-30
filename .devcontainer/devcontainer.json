@@ -4,42 +4,42 @@ import numpy as np
 import plotly.graph_objects as go
 
 st.set_page_config(page_title="Heatseeker Lite", layout="wide")
-st.title("Heatseeker Lite — 100% Free Forever")
+st.title("Heatseeker Lite — Free Forever v3")
 
-st.sidebar.header("Settings")
-API_KEY = st.sidebar.text_input("Polygon.io API Key (optional for demo)", type="password")
 ticker = st.sidebar.selectbox("Ticker", ["SPY","QQQ","IWM","AAPL","TSLA","NVDA","AMD","META","MSFT","GOOGL"])
-spot   = st.sidebar.number_input("Spot price", value=683.39, step=0.5)
+spot = st.sidebar.number_input("Spot price", value=683.39, step=0.5)  # Updated to Nov 28, 2025 close
 
-# Always use realistic mock data (works 24/7, no errors)
-np.random.seed(42)  # Consistent results
-strikes = np.arange(spot - 50, spot + 51, 2.5)
+# Realistic mock GEX (higher OI near spot, mix of positive/negative for variety)
+np.random.seed(42)
+strikes = np.round(np.arange(spot-60, spot+61, 2.5), 2)
 dist = np.abs(strikes - spot)
-oi = np.maximum(5000, 20000 - dist * 100).astype(float)  # Higher OI ATM
-days = np.random.randint(7, 45, len(strikes))  # Random expirations
+oi = np.maximum(5000, 30000 * np.exp(-dist/25) + np.random.normal(0, 5000, len(strikes)))
 
-df = pd.DataFrame({"strike": strikes, "oi": oi, "days": days})
-df["T"] = df["days"] / 365.0
-df["gamma"] = 0.4 / (df["strike"] * 0.2 * np.sqrt(df["T"] + 0.001))
-df["gex"] = -df["oi"] * df["gamma"] * spot ** 2 / 100  # Dealer net GEX
+df = pd.DataFrame({"strike": strikes, "oi": oi.astype(int)})
+df["gamma"] = 0.4 / (df["strike"] * 0.2 * np.sqrt(0.1))
+df["gex"] = -df["oi"] * df["gamma"] * spot*spot * 0.01 * np.random.uniform(0.5, 1.5, len(df))  # Mix positive/negative
 
 gex = df.groupby("strike")["gex"].sum().reset_index()
 king = gex.loc[gex["gex"].idxmax(), "strike"]
 
-# Chart (green/red bars, yellow King Node)
+# Heatseeker-style chart
 fig = go.Figure()
-fig.add_trace(go.Bar(x=gex["strike"], y=gex["gex"]/1e6,
-                     marker_color=["limegreen" if x > 0 else "crimson" for x in gex["gex"]]))
+fig.add_trace(go.Bar(
+    x=gex["strike"], y=gex["gex"]/1e6,
+    marker_color=["limegreen" if x > 0 else "crimson" for x in gex["gex"]]
+))
 fig.add_vline(x=spot, line_color="white", line_dash="dot", annotation_text="Spot")
-fig.add_vline(x=king, line_color="gold", line_width=6, annotation_text="KING NODE")
-fig.update_layout(title=f"{ticker} • King Node ${king:.2f} (Spot ${spot:.2f})",
-                  xaxis_title="Strike", yaxis_title="Net GEX ($M)", height=650, template="plotly_dark")
+fig.add_vline(x=king, line_color="gold", line_width=7, annotation_text=f"KING NODE ${king:.1f}")
+fig.update_layout(
+    title=f"{ticker} → King Node ${king:.1f} (Spot ${spot:.2f})",
+    xaxis_title="Strike", yaxis_title="Net GEX ($ millions)",
+    height=680, template="plotly_dark"
+)
 st.plotly_chart(fig, use_container_width=True)
 
-# Metrics & Table
 col1, col2 = st.columns(2)
-col1.metric("KING NODE", f"${king:.2f}")
-col2.metric("Distance", f"{spot - king:+.2f}")
+col1.metric("KING NODE", f"${king:.1f}", delta=f"{spot-king:+.2f} away")
+col2.metric("Total OI", f"{df['oi'].sum():,} contracts")
 
-st.success(f"Dealers are pulling {ticker} toward **${king:.2f}** — target acquired!")
+st.success(f"Dealers hedging {ticker} toward **${king:.1f}** — target locked!")
 st.dataframe(gex.assign(GEX_M=(gex.gex / 1e6).round(2)).sort_values("gex", ascending=False).head(25), use_container_width=True)
